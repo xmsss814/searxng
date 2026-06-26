@@ -31,13 +31,17 @@ searxng/
 ├── docker-compose.https.yml      # HTTPS 模式部署文件 (TLS + HTTP→HTTPS 重定向)
 ├── setup.sh                      # 一键部署脚本
 ├── .gitignore
+├── mcp-server/                   # MCP Server (FastMCP, Streamable HTTP)
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── server.py
 ├── nginx/
 │   ├── nginx.conf                # Nginx 主配置 (worker/gzip/速率限制)
 │   ├── conf.d/
 │   │   ├── http/
-│   │   │   └── searxng-http.conf     # HTTP 站点配置
+│   │   │   └── searxng-http.conf     # HTTP 站点配置 (含 /mcp 反代)
 │   │   └── https/
-│   │       └── searxng-https.conf    # HTTPS 站点配置 (TLS 安全头)
+│   │       └── searxng-https.conf    # HTTPS 站点配置 (TLS 安全头 + /mcp 反代)
 │   └── .htpasswd                 # Basic Auth 密码文件 (setup.sh 自动生成)
 ├── searxng/
 │   └── settings.yml              # SearXNG 应用配置 (搜索引擎/UI/插件)
@@ -61,6 +65,8 @@ searxng/
 | `AUTH_PASSWORD` | Basic Auth 密码 (明文, setup.sh 用 htpasswd 加密) | `admin123` |
 | `CERT_PATH` | HTTPS 证书存放路径 | `./certs` |
 | `LETSENCRYPT_EMAIL` | Let's Encrypt 通知邮箱 | `admin@example.com` |
+| `MCP_HOST` | MCP Server 监听地址 (容器内) | `0.0.0.0` |
+| `MCP_PORT` | MCP Server 监听端口 (容器内, 通过 Nginx /mcp 暴露) | `8000` |
 
 > ⚠️ **`SEARXNG_BASE_URL` 必须设置**：SearXNG 用它生成所有重定向链接（如保存偏好设置后跳转的地址）。如果设置错误，你会被重定向到 `localhost` 等不可达的地址。应设置为用户实际访问的完整 URL，例如 `http://your-domain:9080` 或 `https://your-domain.com:9443`。
 
@@ -238,6 +244,96 @@ curl -I -u your_username:your_password http://localhost:9080
 # HTTPS 验证 (接受自签名证书用 -k)
 curl -Ik -u your_username:your_password https://localhost:9443
 ```
+
+---
+
+## 作为 MCP 接入 Claude
+
+本项目内置一个 MCP (Model Context Protocol) Server,基于 [FastMCP](https://github.com/jlowin/fastmcp) 实现 **Streamable HTTP** 传输,通过 Nginx 暴露在 `/mcp` 路径下,共享站点的 Basic Auth + TLS。
+
+部署完成后,Claude Code / Claude Desktop 可作为 MCP 客户端直接调用 SearXNG 的搜索能力。
+
+### 暴露的 MCP 工具
+
+| 工具 | 说明 |
+|------|------|
+| `searxng_search` | 执行元搜索,返回聚合 JSON 结果 (支持 categories/language/time_range/engines 等参数) |
+| `searxng_config` | 获取实例配置 (可用引擎、分类、插件) |
+| `searxng_autocomplete` | 获取关键词补全建议 |
+
+### MCP 端点地址
+
+| 部署模式 | URL |
+|---------|-----|
+| HTTP | `http://<DOMAIN>:<HTTP_PORT>/mcp` (例如 `http://localhost:9080/mcp`) |
+| HTTPS | `https://<DOMAIN>:<HTTPS_PORT>/mcp` (例如 `https://localhost:9443/mcp`) |
+
+> 注意: MCP Server 容器走 docker network 直连 `searxng:8080`,不经 Basic Auth;外部访问统一由 Nginx 加 Basic Auth 保护。`/mcp` 已配置流式友好的 Nginx 参数 (`proxy_buffering off`、300s 读超时)。
+
+### 在 Claude Code 中接入
+
+编辑 `~/.claude.json` (或项目的 `.mcp.json`),在 `mcpServers` 中添加:
+
+```json
+{
+  "mcpServers": {
+    "searxng": {
+      "type": "http",
+      "url": "http://localhost:9080/mcp",
+      "httpAuthenticationHeaderName": "Authorization",
+      "headers": {
+        "Authorization": "Basic <BASE64(user:pass)>"
+      }
+    }
+  }
+}
+```
+
+生成 Basic 凭据头 (把 `admin:admin123` 换成你的实际用户名:密码):
+
+```bash
+echo -n "admin:admin123" | base64
+# 输出例如: YWRtaW46YWRtaW4xMjM=
+```
+
+将该值填入 `headers.Authorization`,格式为 `Basic <输出>`。
+
+### 在 Claude Desktop 中接入
+
+Claude Desktop 的 `claude_desktop_config.json` 同样支持 `type: "http"` 配置,字段与上面一致。注意 Desktop 对自签名 HTTPS 证书支持有限,建议在 HTTPS 模式下使用合法证书,或在 HTTP 模式下本地访问。
+
+### 验证 MCP 端点
+
+部署完成后,可用 `curl` 直接验证 Streamable HTTP 端点 (一个合法的 `initialize` JSON-RPC 调用):
+
+```bash
+curl -N -u admin:admin123 http://localhost:9080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"manual","version":"0"}}}'
+```
+
+成功时返回包含 `"result"` 的 SSE 流;失败常见原因:
+
+- `401`: Basic Auth 用户名/密码错误
+- `502/504`: MCP 容器未启动,检查 `docker compose logs searxng-mcp`
+- 返回 HTML: 路径错误 (端点必须是 `/mcp`,不是 `/`)
+
+### 手动测试工具调用
+
+完成 `initialize` → `notifications/initialized` 握手后,调用 `tools/call`:
+
+```bash
+# 先拿到上一步 initialize 返回的 Mcp-Session-Id 头, 然后:
+SESSION=<上一步返回的 id>
+curl -N -u admin:admin123 http://localhost:9080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: $SESSION" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"searxng_search","arguments":{"query":"OpenAI GPT-5","categories":"general","language":"zh-Hans"}}}'
+```
+
+更省事的方式: 直接用 Claude Code 接入后,在对话里说"用 searxng_search 搜索 ..."。
 
 ---
 

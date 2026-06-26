@@ -32,6 +32,31 @@ services:
     networks:
       - searxng-net
 
+  # ============================================================
+  # SearXNG MCP Server
+  # 通过 Streamable HTTP 暴露 MCP 工具 (searxng_search/config/autocomplete)
+  # 走 docker network 直连 searxng:8080, 不需要 Basic Auth
+  # 通过 Nginx 的 /mcp 路径对外暴露, 复用 Basic Auth
+  # ============================================================
+  searxng-mcp:
+    build: ./mcp-server
+    image: searxng-mcp:latest
+    container_name: searxng-mcp
+    restart: unless-stopped
+    environment:
+      - SEARXNG_INTERNAL_URL=http://searxng:8080
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+    depends_on:
+      - searxng
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "2"
+    networks:
+      - searxng-net
+
   nginx:
     image: nginx:alpine
     container_name: searxng-nginx
@@ -44,6 +69,7 @@ services:
       - ./nginx/.htpasswd:/etc/nginx/.htpasswd:ro
     depends_on:
       - searxng
+      - searxng-mcp
     logging:
       driver: "json-file"
       options:
