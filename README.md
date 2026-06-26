@@ -370,6 +370,85 @@ echo -n "admin:admin123" | base64
 
 将该值填入 `headers.Authorization`,格式为 `Basic <输出>`。
 
+### 使用自签名 HTTPS 证书时连接 MCP
+
+Claude Code / Claude Desktop 的 MCP HTTP 客户端默认会校验 TLS 证书。如果 SearXNG 部署在 HTTPS 模式下且使用**自签名证书**(例如通过 `setup.sh --https` 自动生成的 `/CN=<DOMAIN>` 证书,或内网自签证书),客户端会因证书不在系统信任链中而连接失败,典型现象:
+
+- Claude Code 中 MCP 工具不可用,状态显示连接失败
+- 日志/控制台出现 `unable to verify the first certificate` / `self signed certificate` / `ERR_CERT_AUTHORITY_INVALID`
+
+Claude Code 的 MCP HTTP 配置**没有专用字段关闭 TLS 校验**(没有 `tls.noVerify` / `rejectUnauthorized` / `sslValidate` 等)。可选方案如下,按推荐度排序:
+
+#### 方案 A — 加入系统信任链(最安全,推荐)
+
+把自签名证书复制到系统 CA 目录并更新信任库:
+
+```bash
+# Debian/Ubuntu
+sudo cp certs/fullchain.pem /usr/local/share/ca-certificates/searxng.crt
+sudo update-ca-certificates
+
+# RHEL/CentOS
+sudo cp certs/fullchain.pem /etc/pki/ca-trust/source/anchors/searxng.crt
+sudo update-ca-trust
+```
+
+如果 Claude Code 仍报证书错误(Node 自带信任库可能与系统不同步),在 `~/.claude/settings.json` 的顶层 `env` 中追加(**重启 Claude Code 生效**):
+
+```json
+{
+  "env": {
+    "NODE_EXTRA_CA_CERTS": "/usr/local/share/ca-certificates/searxng.crt"
+  }
+}
+```
+
+`NODE_EXTRA_CA_CERTS` 不会绕过校验,只是把指定证书追加到 Node 信任链,比关闭校验更安全。
+
+#### 方案 B — 全局关闭 Node TLS 校验(仅测试环境)
+
+在 `~/.claude/settings.json` 顶层 `env` 中注入:
+
+```json
+{
+  "env": {
+    "NODE_TLS_REJECT_UNAUTHORIZED": "0"
+  }
+}
+```
+
+**风险**: 这会让 Claude Code 主进程**所有** HTTPS 出站连接(包括与 Anthropic API 的通信)都跳过证书校验,存在中间人攻击风险。仅适合**隔离的内网测试环境**,用完务必删除。
+
+> 修改 settings.json 的 `env` 后必须**重启 Claude Code**(退出 CLI/关闭窗口再启动),环境变量在启动时读取,当前会话不会生效。
+
+#### 方案 C — 切换到 HTTP 模式(最快,仅内网)
+
+如果只是内网测试、不需要 TLS,直接用 HTTP 端点最省事,避免任何证书问题:
+
+```bash
+./setup.sh                       # 不带 --https,走 HTTP
+```
+
+然后 `~/.claude.json` 的 `searxng.url` 改为:
+
+```json
+"url": "http://<DOMAIN>:<HTTP_PORT>/mcp"
+```
+
+#### 方案 D — 换用 CA 签发的合法证书
+
+把你的合法证书放进 `certs/` 并创建软链接,然后重新部署:
+
+```bash
+cd certs
+ln -sf your-domain.key  privkey.pem
+ln -sf your-domain.pem  fullchain.pem
+cd ..
+./setup.sh --https
+```
+
+合法证书由受信任 CA 签发,无需任何额外配置即可被 Claude Code 识别。
+
 ### 在 Claude Desktop 中接入
 
 Claude Desktop 的 `claude_desktop_config.json` 同样支持 `type: "http"` 配置,字段与上面一致。注意 Desktop 对自签名 HTTPS 证书支持有限,建议在 HTTPS 模式下使用合法证书,或在 HTTP 模式下本地访问。
