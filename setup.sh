@@ -73,6 +73,78 @@ echo "[2/?] 创建 SearXNG 配置目录..."
 mkdir -p searxng
 
 # ============================================
+# 2b. 同步出站代理到 searxng/settings.yml
+# ============================================
+# 根据 .env 中的 OUTGOING_PROXY 变量, 写入 / 移除 settings.yml 的 outgoing.proxies 字段
+# 留空时移除 proxies 配置 (直连), 设置值时启用代理
+echo "[2b/?] 同步出站代理配置..."
+apply_proxy() {
+# 注意: 以 root 运行 (不带 --user) — searxng 容器启动后会 chown 配置目录到自己的 UID,
+# 这里 setup.sh 在 compose 之前调用, 必须用 root 才能写入 977-owned 的文件
+    docker run --rm -i \
+        -v "$(pwd)/searxng:/etc/searxng:rw" \
+        -e SEARXNG_PROXY="${OUTGOING_PROXY:-}" \
+        --entrypoint python3 \
+        searxng/searxng:latest - <<'PY'
+import os, re, sys
+path = "/etc/searxng/settings.yml"
+with open(path, "r", encoding="utf-8") as f:
+    text = f.read()
+
+proxy = os.environ.get("SEARXNG_PROXY", "").strip()
+
+# 1. 移除"上一轮 setup.sh 注入的代理块": 由 "# 由 setup.sh" 注释引导
+#    只匹配实际注入的块, 不动用户手写的注释示例
+text = re.sub(
+    r"\n[ \t]*# 由 setup\.sh 从 OUTGOING_PROXY 自动写入\n"
+    r"[ \t]*proxies:[^\n]*\n"
+    r"(?:[ \t]+[^\n]*\n)*",
+    "\n",
+    text,
+)
+# 2. 当本次要注入代理时, 也清理 settings.yml 中"注释示例风格"的
+#    proxies/all:// 残留, 避免和注入块重复造成混淆
+if proxy:
+    text = re.sub(
+        r"\n[ \t]*#[ \t]*proxies:[^\n]*\n"
+        r"(?:[ \t]*#[ \t]+[^\n]*\n)*",
+        "\n",
+        text,
+    )
+
+if proxy:
+    # 注入新代理
+    injection = (
+        "\n  # 由 setup.sh 从 OUTGOING_PROXY 自动写入\n"
+        f"  proxies:\n"
+        f"    all://:\n"
+        f"      - {proxy}\n"
+    )
+    if re.search(r"^outgoing:[^\n]*\n", text, re.MULTILINE):
+        # 已有 outgoing: 块, 在其下一行注入 (在 outgoing 的子项之前)
+        text = re.sub(
+            r"(^outgoing:[^\n]*\n)",
+            r"\1" + injection.rstrip("\n") + "\n",
+            text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    else:
+        # 没有 outgoing: 块, 在文件末尾追加
+        if not text.endswith("\n"):
+            text += "\n"
+        text += "\noutgoing:" + injection
+    print(f"  → 已写入代理: {proxy}", file=sys.stderr)
+else:
+    print("  → 未设置 OUTGOING_PROXY, 直连 (不使用代理)", file=sys.stderr)
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(text)
+PY
+}
+apply_proxy
+
+# ============================================
 # 3. 证书处理 (仅 HTTPS 模式)
 # ============================================
 if [ "$1" = "--https" ]; then

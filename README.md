@@ -67,6 +67,7 @@ searxng/
 | `LETSENCRYPT_EMAIL` | Let's Encrypt 通知邮箱 | `admin@example.com` |
 | `MCP_HOST` | MCP Server 监听地址 (容器内) | `0.0.0.0` |
 | `MCP_PORT` | MCP Server 监听端口 (容器内, 通过 Nginx /mcp 暴露) | `8000` |
+| `OUTGOING_PROXY` | SearXNG 访问外网搜索引擎的代理。留空=直连; `http://host:port` / `socks5h://host:port` | (空) |
 
 > ⚠️ **`SEARXNG_BASE_URL` 必须设置**：SearXNG 用它生成所有重定向链接（如保存偏好设置后跳转的地址）。如果设置错误，你会被重定向到 `localhost` 等不可达的地址。应设置为用户实际访问的完整 URL，例如 `http://your-domain:9080` 或 `https://your-domain.com:9443`。
 
@@ -244,6 +245,77 @@ curl -I -u your_username:your_password http://localhost:9080
 # HTTPS 验证 (接受自签名证书用 -k)
 curl -Ik -u your_username:your_password https://localhost:9443
 ```
+
+---
+
+## 出站代理 (访问 Google / Bing 等外网搜索引擎)
+
+当部署在内网/受限网络环境时, SearXNG 容器可能无法直连 Google / Bing / DuckDuckGo 等搜索引擎。设置 `OUTGOING_PROXY` 后, `setup.sh` 会自动把代理写入 `searxng/settings.yml` 的 `outgoing.proxies` 字段, 所有引擎请求都走代理。
+
+### 配置方式
+
+编辑 `.env`:
+
+```ini
+# HTTP 代理
+OUTGOING_PROXY=http://192.168.137.1:10808
+
+# 或 SOCKS5 代理 (DNS 也走代理, 推荐)
+OUTGOING_PROXY=socks5h://192.168.137.1:10808
+
+# 留空 = 直连 (默认)
+OUTGOING_PROXY=
+```
+
+然后重新部署:
+
+```bash
+./setup.sh          # HTTP 模式
+# 或
+./setup.sh --https  # HTTPS 模式
+```
+
+setup.sh 会在 `searxng/settings.yml` 注入/移除如下片段:
+
+```yaml
+outgoing:
+  request_timeout: 5.0
+  useragent_suffix: ""
+  # 由 setup.sh 从 OUTGOING_PROXY 自动写入
+  proxies:
+    all://:
+      - http://192.168.137.1:10808
+```
+
+### 代理地址怎么填
+
+| 代理位置 | 填法 | 说明 |
+|---------|------|------|
+| 宿主机上的代理 (Clash/V2ray 等) | `http://host.docker.internal:7890` | compose 已为 searxng 容器配置 `extra_hosts: host.docker.internal→host-gateway` |
+| 局域网内另一台机器 | `http://192.168.137.1:10808` | 确保 docker 主机能 ping 通该 IP |
+| 同一 docker 网络的代理容器 | `http://<service>:port` | 例如 `http://squid:3128` |
+
+> 注意: 代理地址必须是 **SearXNG 容器视角** 可达的地址。`localhost` / `127.0.0.1` 在容器内指容器自己, 不能用。
+
+### 验证代理生效
+
+部署后直接调用搜索接口, 检查 `unresponsive_engines` 数量:
+
+```bash
+# 设置代理前: 多数引擎 timeout
+curl -s -u admin:admin123 'http://localhost:9080/search?q=test&format=json' \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print('unresponsive:', len(d['unresponsive_engines']), '/ results:', len(d['results']))"
+
+# 重新 ./setup.sh 后: 引擎正常返回结果
+```
+
+如果使用 MCP, 也可调用 `searxng_search` 工具 (见上一章), 返回非空 `results` 即代表代理生效。
+
+### 故障排查
+
+- **代理后仍全部 timeout**: 在容器内验证 `docker exec searxng curl -x $OUTGOING_PROXY -sI https://www.google.com`, 看代理本身是否可达
+- **部分引擎 timeout**: 某些引擎 (如 Wikipedia) 可能不走代理或代理链路不稳定, 可在 SearXNG preferences 里禁用它们, 或调大 `outgoing.request_timeout`
+- **socks5 vs socks5h**: `socks5h://` 让 DNS 解析也走代理, 适合 DNS 被污染的场景; `socks5://` 本地解析 DNS
 
 ---
 

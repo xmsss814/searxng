@@ -25,6 +25,9 @@ services:
       - ./searxng:/etc/searxng:rw
     environment:
       - SEARXNG_BASE_URL=${SEARXNG_BASE_URL:-https://localhost:9443}
+    # 允许容器内通过 host.docker.internal 访问宿主机 (例如使用宿主机的代理)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     cap_drop:
       - ALL
     cap_add:

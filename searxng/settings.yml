@@ -35,9 +35,14 @@ ui:
 #   - 'Ahmia blacklist'
 
 # 外部服务 (可选)
-# outgoing:
-#   request_timeout: 3.0
-#   useragent_suffix: ""
-#   proxies:  # 如果需要通过代理访问搜索引擎
-#     all://:
-#       - socks5h://proxy:9050
+# 出站代理 (访问外网搜索引擎) 由 setup.sh 根据 .env 的 OUTGOING_PROXY 写入
+# 如需手动修改, 取消注释并填入代理地址:
+outgoing:
+  request_timeout: 5.0   # 搜索引擎响应慢时适当调大
+  useragent_suffix: ""
+  # proxies:
+  #   all://:
+  #     - http://192.168.137.1:10808
+  #   # socks5h 也可用:
+  #   # all://:
+  #   #   - socks5h://host:port
