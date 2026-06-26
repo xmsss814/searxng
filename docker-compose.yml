@@ -1,0 +1,57 @@
+# docker-compose.yml
+# ============================
+# SeaxrXNG Docker Compose 部署文件
+# 使用 Basic Auth 进行访问限制
+#
+# 使用方法:
+#   1. 编辑 .env 文件设置用户名和密码
+#   2. 运行: docker compose up -d
+#
+# ============================
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=${SEARXNG_BASE_URL:-http://localhost:9080}
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "2"
+    networks:
+      - searxng-net
+
+  nginx:
+    image: nginx:alpine
+    container_name: searxng-nginx
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-9080}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d/http:/etc/nginx/conf.d:ro
+      - ./nginx/.htpasswd:/etc/nginx/.htpasswd:ro
+    depends_on:
+      - searxng
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "2"
+    networks:
+      - searxng-net
+
+networks:
+  searxng-net:
+    driver: bridge

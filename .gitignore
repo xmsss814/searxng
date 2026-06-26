@@ -1,0 +1,18 @@
+# Sensitive files
+.env
+nginx/.htpasswd
+certs/
+certbot/
+
+# Docker
+docker-compose.override.yml
+
+# IDE
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+.DS_Store

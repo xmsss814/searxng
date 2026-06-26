@@ -1,0 +1,76 @@
+# docker-compose.https.yml
+# ============================
+# SeaxrXNG Docker Compose 部署文件 (HTTPS 版本)
+# 使用 Basic Auth + TLS 加密进行访问限制
+#
+# 前置准备:
+#   1. 编辑 .env 文件设置用户名、密码和域名
+#   2. 将 SSL 证书放入 ./certs/ 目录:
+#      - fullchain.pem  (证书链)
+#      - privkey.pem    (私钥)
+#   3. 如果使用 Let's Encrypt, 运行:
+#      docker compose -f docker-compose.https.yml run --rm certbot certonly ...
+#
+# 启动:
+#   docker compose -f docker-compose.https.yml up -d
+#
+# ============================
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=${SEARXNG_BASE_URL:-https://localhost:9443}
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "2"
+    networks:
+      - searxng-net
+
+  nginx:
+    image: nginx:alpine
+    container_name: searxng-nginx
+    restart: unless-stopped
+    ports:
+      - "${HTTPS_PORT:-9443}:443"
+      # 可选: 暴露 80 端口用于 HTTP -> HTTPS 重定向
+      - "${HTTP_PORT:-9080}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d/https:/etc/nginx/conf.d:ro
+      - ./nginx/.htpasswd:/etc/nginx/.htpasswd:ro
+      - ${CERT_PATH:-./certs}:/etc/nginx/certs:ro
+    depends_on:
+      - searxng
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "2"
+    networks:
+      - searxng-net
+
+  # 可选: Let's Encrypt 证书自动获取 (需要公网域名)
+  # certbot:
+  #   image: certbot/certbot:latest
+  #   container_name: searxng-certbot
+  #   volumes:
+  #     - ${CERT_PATH:-./certs}:/etc/letsencrypt:rw
+  #     - ./certbot/www:/var/www/certbot:rw
+  #   entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+
+networks:
+  searxng-net:
+    driver: bridge

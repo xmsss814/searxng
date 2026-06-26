@@ -1,0 +1,43 @@
+# SearXNG settings.yml
+# 更多配置选项: https://docs.searxng.org/admin/settings/
+
+use_default_settings: true
+
+server:
+  secret_key: "3f271e9c0b149c1ec57b7376c80260836bf5d4ad3789cfcaa82bcc824d0c2c37"
+  bind_address: "0.0.0.0"
+  port: 8080
+  base_url: false  # 使用 SEARXNG_BASE_URL 环境变量
+  limiter: false   # Nginx 处理速率限制
+  image_proxy: true
+  # public_instance: false  # 私有实例, 不向公共列表注册
+
+# 搜索引擎配置
+search:
+  safe_search: 0  # 0=关闭, 1=中等, 2=严格
+  autocomplete: ""
+  default_lang: ""
+  formats:
+    - html
+    - json
+
+# 输出配置
+ui:
+  static_use_hash: true
+  default_theme: simple
+  default_locale: ""
+
+# 插件
+# enabled_plugins:
+#   - 'Hash plugin'
+#   - 'Self Information'
+#   - 'Tracker URL remover'
+#   - 'Ahmia blacklist'
+
+# 外部服务 (可选)
+# outgoing:
+#   request_timeout: 3.0
+#   useragent_suffix: ""
+#   proxies:  # 如果需要通过代理访问搜索引擎
+#     all://:
+#       - socks5h://proxy:9050
