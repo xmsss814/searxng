@@ -6,6 +6,21 @@
 
 ---
 
+## 前置条件
+
+宿主机**仅需安装 Docker**（含 `docker compose` 子命令，即 Docker Compose v2），无需安装 `htpasswd`、`openssl`、`apache2-utils`、`httpd-tools` 等任何系统包。
+
+脚本会通过以下一次性 Docker 容器完成所有辅助操作（用完即删，不参与长期运行）：
+
+| 操作 | 容器镜像 | 说明 |
+|------|----------|------|
+| 生成 `.htpasswd` 密码文件 | `httpd:alpine` | Apache 官方镜像，提供 `htpasswd`,使用 bcrypt 加密 |
+| 自签名证书 / 证书校验 | `alpine/openssl` | 提供 `openssl`,用于 modulus 配对验证、过期检查、自签名生成 |
+
+Docker 安装文档: https://docs.docker.com/engine/install/
+
+---
+
 ## 项目结构
 
 ```
@@ -71,8 +86,10 @@ AUTH_PASSWORD=your_strong_password
 
 ### 2. 生成 SearXNG 密钥 (可选但推荐)
 
+通过 `alpine/openssl` 容器生成（无需在宿主机安装 openssl）：
+
 ```bash
-openssl rand -hex 32
+docker run --rm alpine/openssl rand -hex 32
 ```
 
 将输出填入 `searxng/settings.yml` 的 `server.secret_key` 字段。
@@ -149,11 +166,16 @@ Nginx 始终读取 `fullchain.pem` 和 `privkey.pem`。
 
 ## 手动部署 (不使用 setup.sh)
 
+以下命令均通过 Docker 容器执行，宿主机无需安装 `htpasswd` 或 `openssl`。
+
 ### HTTP 模式
 
 ```bash
-# 1. 生成密码文件
-htpasswd -bc nginx/.htpasswd your_username your_password
+# 1. 生成密码文件 (bcrypt 加密, 通过 httpd:alpine 容器)
+docker run --rm --user "$(id -u):$(id -g)" \
+    -v "$(pwd)/nginx:/auth" \
+    httpd:alpine \
+    htpasswd -bcB /auth/.htpasswd your_username your_password
 
 # 2. 启动服务
 docker compose up -d
@@ -163,14 +185,19 @@ docker compose up -d
 
 ```bash
 # 1. 生成密码文件
-htpasswd -bc nginx/.htpasswd your_username your_password
+docker run --rm --user "$(id -u):$(id -g)" \
+    -v "$(pwd)/nginx:/auth" \
+    httpd:alpine \
+    htpasswd -bcB /auth/.htpasswd your_username your_password
 
-# 2. 生成自签名证书 (仅测试用)
+# 2. 生成自签名证书 (通过 alpine/openssl 容器, 仅测试用)
 mkdir -p certs
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-    -keyout certs/privkey.pem \
-    -out certs/fullchain.pem \
-    -subj "/CN=your-domain.com"
+docker run --rm --user "$(id -u):$(id -g)" \
+    -v "$(pwd)/certs:/work" -w /work \
+    alpine/openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout privkey.pem \
+        -out fullchain.pem \
+        -subj "/CN=your-domain.com"
 
 # 3. 启动
 docker compose -f docker-compose.https.yml up -d
@@ -180,7 +207,10 @@ docker compose -f docker-compose.https.yml up -d
 
 ```bash
 # 1. 生成密码文件
-htpasswd -bc nginx/.htpasswd your_username your_password
+docker run --rm --user "$(id -u):$(id -g)" \
+    -v "$(pwd)/nginx:/auth" \
+    httpd:alpine \
+    htpasswd -bcB /auth/.htpasswd your_username your_password
 
 # 2. 将证书放入 certs/ 并创建软链接
 #    certs/your-domain.key   → 私钥
@@ -244,8 +274,11 @@ docker compose down
 docker compose pull
 docker compose up -d
 
-# 仅重新生成 .htpasswd 并重启 Nginx
-htpasswd -bc nginx/.htpasswd 新用户名 新密码
+# 仅重新生成 .htpasswd 并重启 Nginx (无需宿主机安装 htpasswd)
+docker run --rm --user "$(id -u):$(id -g)" \
+    -v "$(pwd)/nginx:/auth" \
+    httpd:alpine \
+    htpasswd -bcB /auth/.htpasswd 新用户名 新密码
 docker compose restart nginx
 
 # 查看容器状态
@@ -277,7 +310,7 @@ docker compose ps
 ## 安全建议
 
 1. **修改默认密码** — 务必修改 `.env` 中的 `AUTH_USER` / `AUTH_PASSWORD`
-2. **随机化 secret_key** — 运行 `openssl rand -hex 32` 替换 `searxng/settings.yml` 中的密钥
+2. **随机化 secret_key** — 运行 `docker run --rm alpine/openssl rand -hex 32` 替换 `searxng/settings.yml` 中的密钥
 3. **正确设置 SEARXNG_BASE_URL** — 否则保存偏好设置后会被重定向到错误的地址
 4. **生产环境使用 CA 签发证书** — 不要在生产中使用自签名证书；将 `.key` / `.pem` 放入 `certs/`，脚本自动识别
 5. **启用防火墙** — 仅暴露 Nginx 端口 (`HTTP_PORT` / `HTTPS_PORT`)，不直接暴露 SearXNG 的 8080 端口
@@ -307,12 +340,12 @@ docker compose down && docker compose up -d
 
 ### 证书密钥对不匹配
 
-如果 Nginx 报错 `key mismatch`，检查证书和私钥是否配对：
+如果 Nginx 报错 `key mismatch`，检查证书和私钥是否配对（通过 `alpine/openssl` 容器执行，无需宿主机安装 openssl）：
 
 ```bash
 # 比对 modulus — 两行输出应完全相同
-openssl x509 -noout -modulus -in certs/fullchain.pem | md5sum
-openssl rsa -noout -modulus -in certs/privkey.pem | md5sum
+docker run --rm -v "$(pwd)/certs:/work" -w /work alpine/openssl x509 -noout -modulus -in fullchain.pem | md5sum
+docker run --rm -v "$(pwd)/certs:/work" -w /work alpine/openssl rsa  -noout -modulus -in privkey.pem  | md5sum
 ```
 
 ### 端口被占用

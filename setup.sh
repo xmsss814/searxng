@@ -2,6 +2,9 @@
 # ============================
 # SeaxrXNG + Nginx + Basic Auth 一键部署脚本
 #
+# 宿主机零依赖: 所有工具 (htpasswd / openssl) 全部通过 Docker 容器执行
+# 宿主机只需要 docker + docker compose
+#
 # 使用方法:
 #   1. 编辑 .env 文件, 设置 AUTH_USER 和 AUTH_PASSWORD
 #   2. (可选) 将你自己的 SSL 证书放入 ./certs/ 目录
@@ -22,52 +25,62 @@ echo "  SearXNG + Nginx + Basic Auth 部署脚本"
 echo "========================================="
 
 # ============================================
-# 1. 安装 htpasswd (如果没有)
+# 0. 前置检查: Docker 必须可用
 # ============================================
-if ! command -v htpasswd &> /dev/null; then
-    echo "[1/?] 安装 htpasswd 工具..."
-    if command -v apt-get &> /dev/null; then
-        sudo apt-get update && sudo apt-get install -y apache2-utils
-    elif command -v yum &> /dev/null; then
-        sudo yum install -y httpd-tools
-    elif command -v apk &> /dev/null; then
-        apk add apache2-utils
-    elif command -v dnf &> /dev/null; then
-        sudo dnf install -y httpd-tools
-    else
-        echo "错误: 无法自动安装 htpasswd, 请手动安装 apache2-utils 或 httpd-tools"
-        echo "然后重新运行此脚本"
-        exit 1
-    fi
-else
-    echo "[1/?] htpasswd 工具已安装"
+if ! command -v docker &> /dev/null; then
+    echo "❌ 错误: 未找到 docker 命令"
+    echo "   请先安装 Docker: https://docs.docker.com/engine/install/"
+    exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+    echo "❌ 错误: Docker daemon 不可用, 请确认 Docker 服务已启动"
+    echo "   若当前用户无权访问 Docker, 请将用户加入 docker 组或使用 sudo"
+    exit 1
 fi
 
-# ============================================
-# 2. 生成 .htpasswd 文件
-# ============================================
-echo "[2/?] 生成 Basic Auth 密码文件..."
-mkdir -p nginx
-htpasswd -bc nginx/.htpasswd "${AUTH_USER}" "${AUTH_PASSWORD}"
-chmod 644 nginx/.htpasswd
-echo "  用户: ${AUTH_USER}"
-echo "  密码文件: nginx/.htpasswd"
+# 当前用户/组, 用于让容器写入的文件归属当前用户
+CUR_UID="$(id -u)"
+CUR_GID="$(id -g)"
+
+# 辅助函数: 通过 alpine/openssl 容器执行 openssl 命令
+# 自动挂载 ./certs 到 /work, 并以当前用户身份运行
+run_openssl() {
+    docker run --rm \
+        --user "${CUR_UID}:${CUR_GID}" \
+        -v "$(pwd)/certs:/work" \
+        -w /work \
+        alpine/openssl "$@"
+}
 
 # ============================================
-# 3. 确保 SearXNG 配置目录存在
+# 1. 生成 .htpasswd (通过 httpd:alpine 容器, bcrypt 加密)
 # ============================================
-echo "[3/?] 创建 SearXNG 配置目录..."
+echo "[1/?] 通过 httpd:alpine 容器生成 Basic Auth 密码文件 (bcrypt)..."
+mkdir -p nginx
+docker run --rm \
+    --user "${CUR_UID}:${CUR_GID}" \
+    -v "$(pwd)/nginx:/auth" \
+    httpd:alpine \
+    htpasswd -bcB /auth/.htpasswd "${AUTH_USER}" "${AUTH_PASSWORD}" >/dev/null
+chmod 644 nginx/.htpasswd
+echo "  用户: ${AUTH_USER}"
+echo "  密码文件: nginx/.htpasswd (bcrypt 加密)"
+
+# ============================================
+# 2. 确保 SearXNG 配置目录存在
+# ============================================
+echo "[2/?] 创建 SearXNG 配置目录..."
 mkdir -p searxng
 
 # ============================================
-# 4. 证书处理 (仅 HTTPS 模式)
+# 3. 证书处理 (仅 HTTPS 模式)
 # ============================================
 if [ "$1" = "--https" ]; then
-    echo "[4/?] 配置 SSL 证书..."
+    echo "[3/?] 配置 SSL 证书..."
     mkdir -p certs
 
     # --------------------------------------------------
-    # 4a. 检测用户自己上传的证书
+    # 3a. 检测用户自己上传的证书
     # --------------------------------------------------
     USER_KEY=""
     USER_CERT=""
@@ -102,7 +115,7 @@ if [ "$1" = "--https" ]; then
     fi
 
     # --------------------------------------------------
-    # 4b. 根据检测结果处理证书
+    # 3b. 根据检测结果处理证书
     # --------------------------------------------------
     if [ -n "$USER_KEY" ] && [ -n "$USER_CERT" ]; then
         # --- 用户上传了证书 ---
@@ -129,9 +142,9 @@ if [ "$1" = "--https" ]; then
             exit 1
         fi
 
-        # 验证私钥和证书是否匹配 (比对 modulus)
-        KEY_MODULUS=$(openssl rsa -noout -modulus -in "$USER_KEY" 2>/dev/null | md5sum 2>/dev/null || echo "unknown")
-        CERT_MODULUS=$(openssl x509 -noout -modulus -in "$USER_CERT" 2>/dev/null | md5sum 2>/dev/null || echo "unknown")
+        # 验证私钥和证书是否匹配 (比对 modulus, 通过 alpine/openssl 容器执行)
+        KEY_MODULUS=$(run_openssl rsa -noout -modulus -in "$(basename "$USER_KEY")" 2>/dev/null | md5sum 2>/dev/null || echo "unknown")
+        CERT_MODULUS=$(run_openssl x509 -noout -modulus -in "$(basename "$USER_CERT")" 2>/dev/null | md5sum 2>/dev/null || echo "unknown")
         if [ "$KEY_MODULUS" != "unknown" ] && [ "$CERT_MODULUS" != "unknown" ] && [ "$KEY_MODULUS" = "$CERT_MODULUS" ]; then
             echo "  ✓ 私钥与证书匹配验证通过"
         elif [ "$KEY_MODULUS" != "unknown" ] && [ "$CERT_MODULUS" != "unknown" ]; then
@@ -139,24 +152,22 @@ if [ "$1" = "--https" ]; then
             echo "     私钥 modulus: $KEY_MODULUS"
             echo "     证书 modulus: $CERT_MODULUS"
         else
-            echo "  ⚠️  无法验证私钥与证书是否匹配 (openssl 不可用?), 跳过"
+            echo "  ⚠️  无法验证私钥与证书是否匹配 (alpine/openssl 镜像拉取失败?), 跳过"
         fi
 
         # 检查证书是否即将过期 (30天内)
-        if command -v openssl &> /dev/null; then
-            EXPIRY=$(openssl x509 -enddate -noout -in "$USER_CERT" 2>/dev/null | cut -d= -f2)
-            if [ -n "$EXPIRY" ]; then
-                EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s 2>/dev/null || echo 0)
-                NOW_EPOCH=$(date +%s)
-                DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
-                if [ "$DAYS_LEFT" -lt 0 ]; then
-                    echo "  ❌ 错误: 证书已过期! (过期日期: $EXPIRY)"
-                    exit 1
-                elif [ "$DAYS_LEFT" -lt 30 ]; then
-                    echo "  ⚠️  警告: 证书将在 $DAYS_LEFT 天后过期 ($EXPIRY)"
-                else
-                    echo "  ✓ 证书有效期至: $EXPIRY (剩余 $DAYS_LEFT 天)"
-                fi
+        EXPIRY=$(run_openssl x509 -enddate -noout -in "$(basename "$USER_CERT")" 2>/dev/null | cut -d= -f2)
+        if [ -n "$EXPIRY" ]; then
+            EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s 2>/dev/null || echo 0)
+            NOW_EPOCH=$(date +%s)
+            DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
+            if [ "$DAYS_LEFT" -lt 0 ]; then
+                echo "  ❌ 错误: 证书已过期! (过期日期: $EXPIRY)"
+                exit 1
+            elif [ "$DAYS_LEFT" -lt 30 ]; then
+                echo "  ⚠️  警告: 证书将在 $DAYS_LEFT 天后过期 ($EXPIRY)"
+            else
+                echo "  ✓ 证书有效期至: $EXPIRY (剩余 $DAYS_LEFT 天)"
             fi
         fi
 
@@ -188,44 +199,38 @@ if [ "$1" = "--https" ]; then
             echo "     证书: certs/fullchain.pem"
             echo "     私钥: certs/privkey.pem"
         else
-            # --- 生成自签名证书 ---
-            echo "  ℹ️  未检测到用户证书, 生成自签名 SSL 证书..."
-            if command -v openssl &> /dev/null; then
-                openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-                    -keyout certs/privkey.pem \
-                    -out certs/fullchain.pem \
-                    -subj "/CN=${DOMAIN:-localhost}"
-                echo "  ✓ 自签名证书已生成:"
-                echo "     证书: certs/fullchain.pem"
-                echo "     私钥: certs/privkey.pem"
-                echo "  ⚠️  生产环境请使用 CA 签发的正式证书"
-                echo "     将 .key 私钥和 .pem/.crt 证书放入 ./certs/ 目录后重新运行此脚本"
-            else
-                echo "  ❌ 错误: 找不到 openssl 命令, 且未提供证书文件"
-                echo "     请手动将 .key 和 .pem 文件放入 ./certs/ 目录, 或安装 openssl"
-                exit 1
-            fi
+            # --- 通过 alpine/openssl 容器生成自签名证书 ---
+            echo "  ℹ️  未检测到用户证书, 通过 alpine/openssl 容器生成自签名 SSL 证书..."
+            run_openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+                -keyout privkey.pem \
+                -out fullchain.pem \
+                -subj "/CN=${DOMAIN:-localhost}" >/dev/null 2>&1
+            echo "  ✓ 自签名证书已生成:"
+            echo "     证书: certs/fullchain.pem"
+            echo "     私钥: certs/privkey.pem"
+            echo "  ⚠️  生产环境请使用 CA 签发的正式证书"
+            echo "     将 .key 私钥和 .pem/.crt 证书放入 ./certs/ 目录后重新运行此脚本"
         fi
     fi
 
     COMPOSE_FILE="docker-compose.https.yml"
     COMPOSE_FILE_FLAG="-f docker-compose.https.yml"
 else
-    echo "[4/?] HTTP 模式, 跳过证书配置"
+    echo "[3/?] HTTP 模式, 跳过证书配置"
     COMPOSE_FILE="docker-compose.yml"
     COMPOSE_FILE_FLAG=""
 fi
 
 # ============================================
-# 5. 拉取镜像
+# 4. 拉取镜像
 # ============================================
-echo "[5/?] 拉取 Docker 镜像..."
+echo "[4/?] 拉取 Docker 镜像..."
 docker compose ${COMPOSE_FILE_FLAG} pull
 
 # ============================================
-# 6. 启动服务
+# 5. 启动服务
 # ============================================
-echo "[6/?] 启动服务..."
+echo "[5/?] 启动服务..."
 docker compose ${COMPOSE_FILE_FLAG} up -d
 
 echo ""
@@ -256,8 +261,10 @@ else
     echo "    docker compose down"
 fi
 echo ""
-echo "  修改密码后重新生成:"
-echo "    编辑 .env 文件, 然后运行: htpasswd -bc nginx/.htpasswd <用户名> <密码>"
+echo "  修改密码后重新生成 (无需在宿主机安装 htpasswd):"
+echo "    docker run --rm --user \"\$(id -u):\$(id -g)\" -v \"\$(pwd)/nginx:/auth\" \\"
+echo "      httpd:alpine htpasswd -bcB /auth/.htpasswd <用户名> <密码>"
+echo "    docker compose ${COMPOSE_FILE_FLAG} restart nginx"
 echo ""
 echo "  使用自定义证书:"
 echo "    将 .key (私钥) 和 .pem/.crt (证书) 放入 ./certs/ 目录"
