@@ -296,8 +296,13 @@ fi
 # ============================================
 # 4. 拉取镜像
 # ============================================
+# --ignore-buildable: 跳过本地 build 的服务 (如 searxng-mcp)
+# --ignore-pull-failures: 单个镜像失败不中断整体部署 (searxng-mcp 在网络不通时会触发, 因为其 image 名字与远程不对应)
+# 若 searxng-mcp 镜像不存在, 后续 up 时会自动构建
 echo "[4/?] 拉取 Docker 镜像..."
-docker compose ${COMPOSE_FILE_FLAG} pull
+docker compose ${COMPOSE_FILE_FLAG} pull --ignore-buildable --ignore-pull-failures || {
+    echo "  ⚠️  拉取部分镜像失败 (网络问题), 继续部署..."
+}
 
 # ============================================
 # 5. 启动服务

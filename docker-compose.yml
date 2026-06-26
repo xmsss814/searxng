@@ -44,6 +44,9 @@ services:
   searxng-mcp:
     build: ./mcp-server
     image: searxng-mcp:latest
+    # 只使用本地构建的镜像, 永不尝试从 registry 拉取
+    # (避免 docker compose pull 因网络问题报错)
+    pull_policy: never
     container_name: searxng-mcp
     restart: unless-stopped
     environment:
