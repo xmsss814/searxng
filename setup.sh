@@ -145,6 +145,45 @@ PY
 apply_proxy
 
 # ============================================
+# 2c. 询问是否更新 server.secret_key
+# ============================================
+echo ""
+read -p "[2c/?] 是否更新 server.secret_key? (y/N): " UPDATE_KEY
+if [ "${UPDATE_KEY}" = "y" ] || [ "${UPDATE_KEY}" = "Y" ]; then
+    echo "  正在通过 alpine/openssl 容器生成新密钥..."
+    NEW_KEY=$(docker run --rm --user "${CUR_UID}:${CUR_GID}" alpine/openssl rand -hex 32 2>/dev/null)
+    if [ -n "$NEW_KEY" ]; then
+        docker run --rm -i \
+            -v "$(pwd)/searxng:/etc/searxng:rw" \
+            -e NEW_KEY="$NEW_KEY" \
+            --entrypoint python3 \
+            searxng/searxng:latest - <<'PY'
+import os, re, sys
+path = "/etc/searxng/settings.yml"
+with open(path, "r", encoding="utf-8") as f:
+    text = f.read()
+
+new_key = os.environ.get("NEW_KEY", "").strip()
+text = re.sub(
+    r'^(  secret_key:\s*)"[^"]*"',
+    rf'\g<1>"{new_key}"',
+    text,
+    count=1,
+    flags=re.MULTILINE,
+)
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(text)
+PY
+        echo "  ✓ server.secret_key 已更新"
+    else
+        echo "  ⚠️  密钥生成失败, 跳过更新"
+    fi
+else
+    echo "  → 跳过 secret_key 更新"
+fi
+
+# ============================================
 # 3. 证书处理 (仅 HTTPS 模式)
 # ============================================
 if [ "$1" = "--https" ]; then

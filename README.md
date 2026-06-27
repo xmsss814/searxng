@@ -91,9 +91,11 @@ AUTH_USER=your_username
 AUTH_PASSWORD=your_strong_password
 ```
 
-### 2. 生成 SearXNG 密钥 (可选但推荐)
+### 2. (可选) 预先生成 SearXNG 密钥
 
-通过 `alpine/openssl` 容器生成（无需在宿主机安装 openssl）：
+`setup.sh` 在部署过程中会询问是否自动更新 `server.secret_key`，无需手动操作。
+
+如果你希望提前生成密钥，可通过 `alpine/openssl` 容器运行：
 
 ```bash
 docker run --rm alpine/openssl rand -hex 32
@@ -557,7 +559,7 @@ docker compose ps
 ## 安全建议
 
 1. **修改默认密码** — 务必修改 `.env` 中的 `AUTH_USER` / `AUTH_PASSWORD`
-2. **随机化 secret_key** — 运行 `docker run --rm alpine/openssl rand -hex 32` 替换 `searxng/settings.yml` 中的密钥
+2. **随机化 secret_key** — `setup.sh` 部署时会询问是否自动更新密钥，选择 `y` 即可；也可手动运行 `docker run --rm alpine/openssl rand -hex 32` 替换 `searxng/settings.yml` 中的密钥
 3. **正确设置 SEARXNG_BASE_URL** — 否则保存偏好设置后会被重定向到错误的地址
 4. **生产环境使用 CA 签发证书** — 不要在生产中使用自签名证书；将 `.key` / `.pem` 放入 `certs/`，脚本自动识别
 5. **启用防火墙** — 仅暴露 Nginx 端口 (`HTTP_PORT` / `HTTPS_PORT`)，不直接暴露 SearXNG 的 8080 端口
