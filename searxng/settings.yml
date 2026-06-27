@@ -15,7 +15,7 @@ server:
 # 搜索引擎配置
 search:
   safe_search: 0  # 0=关闭, 1=中等, 2=严格
-  autocomplete: ""
+  autocomplete: "google"
   default_lang: ""
   formats:
     - html
