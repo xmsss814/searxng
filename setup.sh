@@ -347,7 +347,7 @@ docker compose ${COMPOSE_FILE_FLAG} pull --ignore-buildable --ignore-pull-failur
 # 5. 启动服务
 # ============================================
 echo "[5/?] 启动服务..."
-docker compose ${COMPOSE_FILE_FLAG} up -d
+docker compose ${COMPOSE_FILE_FLAG} up -d --build
 
 echo ""
 echo "========================================="

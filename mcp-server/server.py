@@ -89,7 +89,7 @@ async def searxng_autocomplete(q: str, language: str | None = None) -> list[Any]
     params: dict[str, Any] = {"q": q}
     if language:
         params["language"] = language
-    return await _get("/autocompeter", params=params)
+    return await _get("/autocompleter", params=params)
 
 
 if __name__ == "__main__":
